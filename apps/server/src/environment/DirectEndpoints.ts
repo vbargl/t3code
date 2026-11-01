@@ -34,7 +34,9 @@ const TAILSCALE_ENDPOINT_TIMEOUT = Duration.seconds(3);
 export class DirectEndpoints extends Context.Service<
   DirectEndpoints,
   {
-    readonly resolve: () => Effect.Effect<ReadonlyArray<ServerDirectEndpoint>>;
+    readonly resolve: (
+      advertisedUrls?: ReadonlyArray<string>,
+    ) => Effect.Effect<ReadonlyArray<ServerDirectEndpoint>>;
   }
 >()("t3/environment/DirectEndpoints") {}
 
@@ -128,7 +130,9 @@ export const make = Effect.gen(function* () {
     : Effect.succeed(false);
   yield* Effect.forkDetach(onCloudVm);
 
-  const resolve = Effect.gen(function* () {
+  const resolve = Effect.fn("DirectEndpoints.resolve")(function* (
+    advertisedUrls: ReadonlyArray<string> = [],
+  ) {
     const endpoints = [
       ...resolveBoundEndpoints({
         platform,
@@ -162,13 +166,16 @@ export const make = Effect.gen(function* () {
         endpoints.push({ kind: "tailnet", httpBaseUrl: servedUrl.value });
       }
     }
+    for (const httpBaseUrl of advertisedUrls) {
+      if (!endpoints.some((endpoint) => endpoint.httpBaseUrl === httpBaseUrl)) {
+        endpoints.push({ kind: "configured", httpBaseUrl });
+      }
+    }
     return endpoints;
   });
 
   return DirectEndpoints.of({
-    resolve: Effect.fn("DirectEndpoints.resolve")(function () {
-      return resolve;
-    }),
+    resolve,
   });
 });
 

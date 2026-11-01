@@ -149,6 +149,23 @@ shown there apply only to the route marked **In use**; other routes are not
 checked. Direct pairing and T3 Connect have separate sessions and may grant
 different permissions.
 
+To advertise addresses provided by your own HTTPS proxy, add `advertisedUrls` to
+`~/.t3/userdata/settings.json` on that computer (under your T3 home if customized):
+
+```json
+{
+  "advertisedUrls": ["https://desktop.t3.example.com", "https://desktop.internal.example"]
+}
+```
+
+Merge this field into your existing settings. Each URL must be an HTTPS origin,
+without credentials, a path prefix, query or fragment. Set up DNS, certificates
+and proxy routing separately. Compatible clients already connected to this
+computer learn changes automatically; disconnected clients learn them when they
+next connect through a working route. Removing a URL withdraws its learned route,
+while manually added routes and client route priorities are preserved. This does
+not add the computer to devices that have never paired with it.
+
 ### Balance new threads across machines
 
 Auto balance is off by default. On web and desktop, enable it in

@@ -468,7 +468,7 @@ describe("RpcSessionFactory", () => {
           yield* publishConfigEvents(socket, [event]);
           expect(yield* Queue.take(observed)).toEqual(event);
           const started = yield* Deferred.make<void>();
-          const replay = yield* session.subscribeServerConfig(options).pipe(
+          const replay = yield* session.subscribeServerConfig().pipe(
             Stream.tap(() => Deferred.succeed(started, undefined)),
             Stream.takeUntil((item) => item.type === "keybindingsUpdated"),
             Stream.runCollect,

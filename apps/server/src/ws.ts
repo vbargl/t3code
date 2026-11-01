@@ -1761,7 +1761,9 @@ export const layerWsRpc = (
           remoteOpenTargets: yield* resolveAvailableEditorsForConfig(
             remoteOpenTargets.resolveTargets(),
           ),
-          directEndpoints: yield* resolveAvailableEditorsForConfig(directEndpoints.resolve()),
+          directEndpoints: yield* resolveAvailableEditorsForConfig(
+            directEndpoints.resolve(settings.advertisedUrls),
+          ),
           observability: {
             logsDirectoryPath: config.logsDir,
             localTracingEnabled: true,

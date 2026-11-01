@@ -268,8 +268,10 @@ const layerServeConfig = Layer.effect(
   Layer.provide(NodeServices.layer),
 );
 
-const resolveWithServe = (probeStatus: number) =>
-  Effect.flatMap(DirectEndpoints.DirectEndpoints, (service) => service.resolve()).pipe(
+const resolveWithServe = (probeStatus: number, advertisedUrls: ReadonlyArray<string> = []) =>
+  Effect.flatMap(DirectEndpoints.DirectEndpoints, (service) =>
+    service.resolve(advertisedUrls),
+  ).pipe(
     Effect.provide(
       DirectEndpoints.layer.pipe(
         Layer.provide(
@@ -282,8 +284,17 @@ const resolveWithServe = (probeStatus: number) =>
 describe("DirectEndpoints Tailscale Serve", () => {
   effectIt.effect("lists the tailnet name once Serve answers for this server", () =>
     Effect.gen(function* () {
-      expect(yield* resolveWithServe(200)).toEqual([
+      expect(
+        yield* resolveWithServe(200, [
+          "https://desktop.example/",
+          "https://desktop.internal/",
+          "https://desktop.example/",
+          "https://bb-1.tail1234.ts.net/",
+        ]),
+      ).toEqual([
         { kind: "tailnet", httpBaseUrl: "https://bb-1.tail1234.ts.net/" },
+        { kind: "configured", httpBaseUrl: "https://desktop.example/" },
+        { kind: "configured", httpBaseUrl: "https://desktop.internal/" },
       ]);
     }),
   );

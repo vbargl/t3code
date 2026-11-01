@@ -584,7 +584,7 @@ export function environmentThemeFileHasColors(file: EnvironmentThemeFile): boole
 }
 
 /** tailnet means this machine's Tailscale interface; other private addresses are lan. */
-export const ServerDirectEndpointKind = Schema.Literals(["lan", "tailnet"]);
+export const ServerDirectEndpointKind = Schema.Literals(["lan", "tailnet", "configured"]);
 export type ServerDirectEndpointKind = typeof ServerDirectEndpointKind.Type;
 
 export const ServerDirectEndpoint = Schema.Struct({

@@ -15,6 +15,10 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Tracer from "effect/Tracer";
 
+import {
+  applyServerConfigProjection,
+  type ServerConfigProjection,
+} from "../state/serverConfigProjection.ts";
 import type { ConnectionCatalogEntry, ConnectionRoute } from "./catalog.ts";
 import * as Connectivity from "./connectivity.ts";
 import * as ConnectionDriver from "./driver.ts";
@@ -334,19 +338,33 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     learn: NonNullable<EnvironmentSupervisorOptions["learnRoutes"]>,
     lease: ConnectionDriver.EnvironmentConnectionLease,
   ) {
-    const config = yield* lease.session.initialConfig.pipe(Effect.option);
-    const reported = Option.getOrUndefined(config)?.directEndpoints;
-    if (reported === undefined) return;
     const activeId = connectionRouteId(lease.prepared.target);
     const activeRoute = (yield* currentRoutes).find(
       (route) => connectionRouteId(route.target) === activeId,
     );
     if (activeRoute === undefined) return;
-    const updated = yield* learn({ activeRoute, reported });
-    if (Option.isSome(updated)) {
-      yield* Ref.set(currentEntry, updated.value);
-      yield* requestBetterRouteCheck(lease);
-    }
+    yield* lease.session.subscribeServerConfig().pipe(
+      Stream.filter((event) => event.type === "snapshot" || event.type === "settingsUpdated"),
+      Stream.scan(() => Option.none<ServerConfigProjection>(), applyServerConfigProjection),
+      Stream.filter(Option.isSome),
+      Stream.map(({ value: { config } }) => [
+        ...(config.directEndpoints ?? []).filter((endpoint) => endpoint.kind !== "configured"),
+        ...config.settings.advertisedUrls.map((httpBaseUrl) => ({
+          kind: "configured",
+          httpBaseUrl,
+        })),
+      ]),
+      Stream.changesWith((previous, next) => JSON.stringify(previous) === JSON.stringify(next)),
+      Stream.runForEach((reported) =>
+        Effect.gen(function* () {
+          const updated = yield* learn({ activeRoute, reported });
+          if (Option.isSome(updated)) {
+            yield* Ref.set(currentEntry, updated.value);
+            yield* requestBetterRouteCheck(lease);
+          }
+        }),
+      ),
+    );
   });
 
   const routeIndex = (lease: ConnectionDriver.EnvironmentConnectionLease) =>

@@ -1,3 +1,4 @@
+import { DEFAULT_SERVER_SETTINGS, type ServerConfigStreamEvent } from "@t3tools/contracts";
 import { AuthStandardClientScopes, EnvironmentId, type ServerConfig } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -5,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Random from "effect/Random";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -37,7 +39,13 @@ import * as RpcSession from "../rpc/session.ts";
 import { presentConnectionState } from "./presentation.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
-import { connectionRouteId, entryWithRoutes, isLearned, mergeLearnedRoutes } from "./routes.ts";
+import {
+  connectionRouteId,
+  entryWithRoutes,
+  isLearned,
+  mergeLearnedRoutes,
+  routeHttpBaseUrl,
+} from "./routes.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -146,6 +154,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
   readonly ready?: (attempt: number) => Effect.Effect<void, ConnectionAttemptError>;
   readonly probe?: (attempt: number) => Effect.Effect<void, ConnectionAttemptError>;
   readonly initialConfig?: (attempt: number) => Effect.Effect<ServerConfig, ConnectionAttemptError>;
+  readonly configEvents?: Stream.Stream<ServerConfigStreamEvent>;
   readonly checkRoute?: (route: ConnectionRoute) => Effect.Effect<ConnectionDriver.RouteCheck>;
   readonly checkHost?: (prepared: PreparedConnection) => Effect.Effect<ConnectionDriver.RouteCheck>;
   readonly preflight?: (route: ConnectionRoute) => Effect.Effect<ConnectionDriver.RoutePreflight>;
@@ -201,7 +210,16 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
         initialConfig:
           options?.initialConfig?.(attempt) ??
           Effect.die(new Error("Initial config is not used by supervisor tests.")),
-        subscribeServerConfig: (input) => TEST_RPC_CLIENT.subscribeServerConfig(input),
+        subscribeServerConfig: () =>
+          options?.configEvents ??
+          Stream.fromEffect(
+            (
+              options?.initialConfig?.(attempt) ??
+              Effect.die(new Error("No config stream fixture."))
+            ).pipe(Effect.orDie),
+          ).pipe(
+            Stream.map((config) => ({ version: 1 as const, type: "snapshot" as const, config })),
+          ),
         ready: options?.ready?.(attempt) ?? Effect.void,
         probe: options?.probe?.(attempt) ?? Effect.void,
         inboundFrames: options?.inboundFrames ?? Effect.succeed(0),
@@ -1806,7 +1824,8 @@ describe("EnvironmentSupervisor routes", () => {
         prepare: (_attempt, target) => Effect.succeed(preparedFor(target)),
         initialConfig: () =>
           Ref.get(lanAddress).pipe(
-            Effect.map((httpBaseUrl): Pick<ServerConfig, "directEndpoints"> => ({
+            Effect.map((httpBaseUrl): Pick<ServerConfig, "directEndpoints" | "settings"> => ({
+              settings: DEFAULT_SERVER_SETTINGS,
               directEndpoints: [{ kind: "lan", httpBaseUrl }],
             })),
             Effect.map((config) => config as ServerConfig),
@@ -1845,6 +1864,79 @@ describe("EnvironmentSupervisor routes", () => {
       expect(yield* Ref.get(learned)).toEqual([
         `learned:${TARGET.environmentId}:http://192.168.1.10:3773`,
       ]);
+    }),
+  );
+  it.effect("learns, replaces and withdraws configured URLs without reconnecting", () =>
+    Effect.gen(function* () {
+      const config: ServerConfig = {
+        ...PROBE_CAPABLE_CONFIG,
+        settings: DEFAULT_SERVER_SETTINGS,
+        directEndpoints: [],
+      };
+      const configs = yield* SubscriptionRef.make<ServerConfigStreamEvent>({
+        version: 1,
+        type: "snapshot",
+        config,
+      });
+      const learned = yield* Queue.unbounded<ConnectionCatalogEntry>();
+      const subscribed = yield* Deferred.make<void>();
+      const current = yield* Ref.make(LAN_ENTRY);
+      const harness = yield* makeHarness({
+        prepare: (_attempt, target) => Effect.succeed(preparedFor(target)),
+        initialConfig: () => Effect.succeed(config),
+        configEvents: SubscriptionRef.changes(configs).pipe(
+          Stream.tap((event) =>
+            event.type === "snapshot" ? Deferred.succeed(subscribed, undefined) : Effect.void,
+          ),
+        ),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(LAN_ENTRY, {
+        initiallyDesired: true,
+        learnRoutes: ({ activeRoute, reported }) =>
+          Effect.gen(function* () {
+            const entry = yield* Ref.get(current);
+            const routes = mergeLearnedRoutes({
+              entry,
+              activeRoute,
+              reported,
+              allowInsecure: true,
+            });
+            if (routes === null) return Option.none();
+            const next = entryWithRoutes(entry, routes);
+            yield* Ref.set(current, next);
+            yield* Queue.offer(learned, next);
+            return Option.some(next);
+          }),
+      }).pipe(Effect.provide(harness.dependencies));
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      const update = (advertisedUrls: ReadonlyArray<string>) =>
+        SubscriptionRef.set(configs, {
+          version: 1,
+          type: "settingsUpdated",
+          payload: { settings: { ...DEFAULT_SERVER_SETTINGS, advertisedUrls } },
+        });
+      yield* Deferred.await(subscribed);
+      yield* update([
+        "https://desktop.example/",
+        "https://desktop.internal/",
+        "https://desktop.example/",
+      ]);
+      const added = yield* Queue.take(learned);
+      expect(added.alternateRoutes?.map(routeHttpBaseUrl)).toEqual([
+        "https://desktop.example/",
+        "https://desktop.internal/",
+      ]);
+      yield* update(["https://replacement.example/"]);
+      const replaced = yield* Queue.take(learned);
+      expect(replaced.alternateRoutes?.map(routeHttpBaseUrl)).toEqual([
+        "https://replacement.example/",
+      ]);
+      yield* update([]);
+      const removed = yield* Queue.take(learned);
+      expect(removed.target).toEqual(LAN_TARGET);
+      expect(removed.alternateRoutes).toBeUndefined();
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
     }),
   );
 });

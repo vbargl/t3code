@@ -1178,7 +1178,38 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+const AdvertisedUrl = TrimmedNonEmptyString.check(
+  Schema.makeFilter(
+    (value) => {
+      try {
+        const url = new URL(value);
+        return (
+          url.protocol === "https:" &&
+          url.username === "" &&
+          url.password === "" &&
+          url.pathname === "/" &&
+          !value.includes("?") &&
+          !value.includes("#")
+        );
+      } catch {
+        return false;
+      }
+    },
+    { expected: "an HTTPS origin without credentials, a path, a query or a fragment" },
+  ),
+).pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transform({
+      decode: (value) => `${new URL(value).origin}/`,
+      encode: (value) => value,
+    }),
+  ),
+);
+const AdvertisedUrls = Schema.Array(AdvertisedUrl);
+
 export const ServerSettings = Schema.Struct({
+  advertisedUrls: AdvertisedUrls.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
@@ -1519,6 +1550,7 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  advertisedUrls: Schema.optionalKey(AdvertisedUrls),
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),

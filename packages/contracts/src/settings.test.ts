@@ -40,6 +40,36 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+describe("advertised URLs", () => {
+  it("defaults to no configured routes and normalizes multiple HTTPS origins", () => {
+    expect(decodeServerSettings({}).advertisedUrls).toEqual([]);
+    const advertisedUrls = [" https://Desktop.EXAMPLE:443 ", "https://desktop.internal:8443/"];
+    const expected = ["https://desktop.example/", "https://desktop.internal:8443/"];
+    expect(decodeServerSettings({ advertisedUrls }).advertisedUrls).toEqual(expected);
+    expect(decodeServerSettingsPatch({ advertisedUrls })).toEqual({ advertisedUrls: expected });
+    expect(decodeServerSettingsPatch({ advertisedUrls: [] })).toEqual({ advertisedUrls: [] });
+    expect(
+      decodeServerSettings(encodeServerSettings(decodeServerSettings({ advertisedUrls })))
+        .advertisedUrls,
+    ).toEqual(expected);
+  });
+
+  it.each([
+    "http://desktop.example",
+    "wss://desktop.example",
+    "not a URL",
+    "https://user:password@desktop.example",
+    "https://desktop.example/t3",
+    "https://desktop.example/?token=secret",
+    "https://desktop.example/#token",
+    "https://desktop.example/?",
+    "https://desktop.example/#",
+  ])("rejects unsafe or unsupported advertised URL %s", (url) => {
+    expect(() => decodeServerSettings({ advertisedUrls: [url] })).toThrow();
+    expect(() => decodeServerSettingsPatch({ advertisedUrls: [url] })).toThrow();
+  });
+});
+
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();
