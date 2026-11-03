@@ -394,11 +394,11 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
           }),
       ),
     );
-    const subscribeServerConfig = (input?: ServerConfigSubscriptionInput) =>
+    const subscribeServerConfig = (input: ServerConfigSubscriptionInput = serverConfigInput) =>
       Stream.unwrap(
         validatedInitialConfig.pipe(
           Effect.as(
-            input === undefined || Equal.equals(input, serverConfigInput)
+            Equal.equals(input, serverConfigInput)
               ? serverConfigEvents
               : protocolClient[WS_METHODS.subscribeServerConfig](onDemandSnapshots(input)),
           ),

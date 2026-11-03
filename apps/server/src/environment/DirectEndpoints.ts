@@ -9,6 +9,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import { HttpClient } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as NodeNet from "node:net";
@@ -34,6 +35,9 @@ const TAILSCALE_ENDPOINT_TIMEOUT = Duration.seconds(3);
 export class DirectEndpoints extends Context.Service<
   DirectEndpoints,
   {
+    readonly resolveAvailable: (
+      advertisedUrls?: ReadonlyArray<string>,
+    ) => Effect.Effect<ReadonlyArray<ServerDirectEndpoint>>;
     readonly resolve: (
       advertisedUrls?: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<ServerDirectEndpoint>>;
@@ -130,7 +134,8 @@ export const make = Effect.gen(function* () {
     : Effect.succeed(false);
   yield* Effect.forkDetach(onCloudVm);
 
-  const resolve = Effect.fn("DirectEndpoints.resolve")(function* (
+  const servedEndpoint = yield* Ref.make<Option.Option<string>>(Option.none());
+  const resolveAvailable = Effect.fn("DirectEndpoints.resolveAvailable")(function* (
     advertisedUrls: ReadonlyArray<string> = [],
   ) {
     const endpoints = [
@@ -142,6 +147,19 @@ export const make = Effect.gen(function* () {
         onCloudVm: yield* onCloudVm,
       }),
     ];
+    const servedUrl = yield* Ref.get(servedEndpoint);
+    if (Option.isSome(servedUrl)) endpoints.push({ kind: "tailnet", httpBaseUrl: servedUrl.value });
+    for (const httpBaseUrl of advertisedUrls) {
+      if (!endpoints.some((endpoint) => endpoint.httpBaseUrl === httpBaseUrl)) {
+        endpoints.push({ kind: "configured", httpBaseUrl });
+      }
+    }
+    return endpoints;
+  });
+
+  const resolve = Effect.fn("DirectEndpoints.resolve")(function* (
+    advertisedUrls: ReadonlyArray<string> = [],
+  ) {
     // Serve setup can fail without stopping startup; advertise only after it answers as this server.
     if (config.tailscaleServeEnabled) {
       const servedUrl = yield* readTailscaleStatus.pipe(
@@ -162,19 +180,13 @@ export const make = Effect.gen(function* () {
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(HttpClient.HttpClient, httpClient),
       );
-      if (Option.isSome(servedUrl)) {
-        endpoints.push({ kind: "tailnet", httpBaseUrl: servedUrl.value });
-      }
+      yield* Ref.set(servedEndpoint, servedUrl);
     }
-    for (const httpBaseUrl of advertisedUrls) {
-      if (!endpoints.some((endpoint) => endpoint.httpBaseUrl === httpBaseUrl)) {
-        endpoints.push({ kind: "configured", httpBaseUrl });
-      }
-    }
-    return endpoints;
+    return yield* resolveAvailable(advertisedUrls);
   });
 
   return DirectEndpoints.of({
+    resolveAvailable,
     resolve,
   });
 });
